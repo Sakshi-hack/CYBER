@@ -1,768 +1,573 @@
 
 import io
-import hashlib
+from datetime import datetime
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from torchvision.models import resnet18, ResNet18_Weights
-from torchvision.transforms.functional import to_tensor
+from torchvision import models, transforms
 
 
-# =========================================================
+# --------------------------------------------------
 # PAGE CONFIGURATION
-# =========================================================
+# --------------------------------------------------
 st.set_page_config(
-    page_title="CyberShield AI | Robustness Lab",
+    page_title="CyberShield AI",
     page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="wide"
 )
 
 
-# =========================================================
-# BLACK & WHITE THEME + LARGE ACCESSIBLE TEXT
-# =========================================================
+# --------------------------------------------------
+# DARK THEME AND STYLING
+# --------------------------------------------------
 st.markdown("""
 <style>
-/* Main black background */
 .stApp {
-    background: #080808 !important;
-    color: #ffffff !important;
+    background-color: #080808;
+    color: #ffffff;
 }
-
-/* Main body text */
-.stApp p,
-.stApp li,
-.stApp label,
-.stApp [data-testid="stMarkdownContainer"],
-.stApp [data-testid="stCaptionContainer"] {
-    color: #ffffff !important;
-    font-size: 21px !important;
-    line-height: 1.65 !important;
+[data-testid="stSidebar"] {
+    background-color: #151515;
 }
-
-/* Headings */
-.stApp h1 {
+h1 {
     color: #ffffff !important;
     font-size: 42px !important;
     font-weight: 800 !important;
-    line-height: 1.3 !important;
 }
-
-.stApp h2 {
+h2 {
     color: #ffffff !important;
     font-size: 34px !important;
-    font-weight: 750 !important;
 }
-
-.stApp h3 {
+h3 {
     color: #ffffff !important;
     font-size: 28px !important;
-    font-weight: 700 !important;
 }
-
-/* Sidebar */
-section[data-testid="stSidebar"] {
-    background: #151515 !important;
-    border-right: 2px solid #555555 !important;
+p, label, li {
+    color: #eeeeee;
+    font-size: 19px;
 }
-
-section[data-testid="stSidebar"] p,
-section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] li,
-section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
-    color: #ffffff !important;
-    font-size: 21px !important;
-    line-height: 1.65 !important;
+div[data-testid="stMetricValue"] {
+    color: #22c55e;
+    font-size: 30px;
 }
-
-/* Metric cards */
-[data-testid="stMetric"] {
-    background: #171717 !important;
-    border: 2px solid #777777 !important;
-    border-radius: 12px !important;
-    padding: 18px !important;
+div[data-testid="stMetricLabel"] {
+    color: #ffffff;
+    font-size: 17px;
 }
-
-[data-testid="stMetricLabel"] {
-    color: #eeeeee !important;
-    font-size: 20px !important;
+.stButton > button {
+    background-color: #16a34a;
+    color: white;
+    font-size: 19px;
+    font-weight: bold;
+    border-radius: 10px;
+    border: none;
+    padding: 10px 18px;
 }
-
-[data-testid="stMetricValue"] {
-    color: #ffffff !important;
-    font-size: 32px !important;
-    font-weight: 800 !important;
+.stButton > button:hover {
+    background-color: #15803d;
+    color: white;
 }
-
-[data-testid="stMetricDelta"] {
-    color: #ffffff !important;
-    font-size: 18px !important;
-}
-
-/* Buttons */
-.stButton button,
-.stDownloadButton button {
-    background: #ffffff !important;
-    color: #000000 !important;
-    border: 2px solid #ffffff !important;
-    border-radius: 8px !important;
-    font-size: 21px !important;
-    font-weight: 800 !important;
-    min-height: 54px !important;
-    padding: 12px 18px !important;
-}
-
-.stButton button:hover,
-.stDownloadButton button:hover {
-    background: #dddddd !important;
-    color: #000000 !important;
-}
-
-/* Slider and form labels */
-.stSlider [data-testid="stMarkdownContainer"] p {
-    color: #ffffff !important;
-    font-size: 20px !important;
-}
-
-/* Inputs */
-.stApp input,
-.stApp textarea {
-    font-size: 20px !important;
-}
-
-/* File uploader */
-[data-testid="stFileUploader"] {
-    border: 2px dashed #aaaaaa !important;
-    border-radius: 12px !important;
-    padding: 12px !important;
-}
-
-/* Separators */
-hr {
-    border-color: #777777 !important;
-}
-
-/* Alerts */
 div[data-testid="stAlert"] {
-    border: 1px solid #aaaaaa !important;
-    font-size: 20px !important;
-}
-
-/* Code blocks */
-.stApp code {
-    font-size: 18px !important;
-}
-
-/* Download and button text stays readable */
-.stButton button p,
-.stDownloadButton button p {
-    color: #000000 !important;
-    font-size: 21px !important;
-}
-
-/* Footer */
-.stApp [data-testid="stCaptionContainer"] p {
-    color: #dddddd !important;
-    font-size: 17px !important;
+    font-size: 17px;
 }
 </style>
 """, unsafe_allow_html=True)
 
 
-# =========================================================
-# MODEL LOADING
-# =========================================================
-@st.cache_resource(show_spinner="Loading ResNet-18 model...")
+# --------------------------------------------------
+# LOAD PRETRAINED RESNET-18
+# --------------------------------------------------
+@st.cache_resource
 def load_model():
-    weights = ResNet18_Weights.DEFAULT
-    model = resnet18(weights=weights)
+    weights = models.ResNet18_Weights.DEFAULT
+    model = models.resnet18(weights=weights)
     model.eval()
-    categories = weights.meta["categories"]
-    return model, categories
+
+    return model, weights.meta["categories"]
 
 
-# =========================================================
-# IMAGE PREPROCESSING
-# =========================================================
-def normalize_image(image_tensor):
-    mean = torch.tensor(
-        [0.485, 0.456, 0.406]
-    ).view(1, 3, 1, 1)
+model, class_names = load_model()
 
-    std = torch.tensor(
-        [0.229, 0.224, 0.225]
-    ).view(1, 3, 1, 1)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
 
-    return (image_tensor - mean) / std
+# ImageNet normalization
+mean = torch.tensor(
+    [0.485, 0.456, 0.406],
+    device=device
+).view(1, 3, 1, 1)
+
+std = torch.tensor(
+    [0.229, 0.224, 0.225],
+    device=device
+).view(1, 3, 1, 1)
+
+# Resize and crop without normalizing yet.
+# This lets FGSM perturb pixel values in the [0, 1] range.
+image_transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor()
+])
 
 
-# =========================================================
-# MODEL PREDICTION
-# =========================================================
-def predict(model, image_tensor, categories):
+# --------------------------------------------------
+# PREDICTION FUNCTION
+# --------------------------------------------------
+def predict_image(pixel_tensor):
+    normalized = (pixel_tensor - mean) / std
+
     with torch.no_grad():
-        logits = model(normalize_image(image_tensor))
+        logits = model(normalized)
         probabilities = torch.softmax(logits, dim=1)
-        confidence, class_index = probabilities.max(dim=1)
 
-    label = categories[class_index.item()]
-    confidence_value = confidence.item()
+    confidence, predicted_index = probabilities.max(dim=1)
 
-    return label, confidence_value
-
-
-# =========================================================
-# FGSM ADVERSARIAL ATTACK
-# =========================================================
-def apply_fgsm(model, image_tensor, epsilon):
-    """
-    FGSM formula:
-    x_adv = clip(x + epsilon * sign(gradient), 0, 1)
-
-    The model's original predicted class is used as a pseudo-label.
-    """
-
-    attack_input = (
-        image_tensor.clone().detach().requires_grad_(True)
+    return (
+        int(predicted_index.item()),
+        float(confidence.item()) * 100,
+        probabilities[0].detach().cpu()
     )
 
-    logits = model(normalize_image(attack_input))
 
-    pseudo_label = logits.detach().argmax(dim=1)
-
-    loss = F.cross_entropy(logits, pseudo_label)
+# --------------------------------------------------
+# FGSM ATTACK
+# --------------------------------------------------
+def fgsm_attack(pixel_tensor, epsilon, original_class):
+    image = pixel_tensor.clone().detach().to(device)
+    image.requires_grad_(True)
 
     model.zero_grad(set_to_none=True)
+
+    normalized = (image - mean) / std
+    logits = model(normalized)
+
+    # Use the original prediction as the attack reference.
+    target = torch.tensor(
+        [original_class],
+        dtype=torch.long,
+        device=device
+    )
+
+    loss = F.cross_entropy(logits, target)
     loss.backward()
 
-    perturbation = epsilon * attack_input.grad.sign()
+    # Untargeted FGSM: increase the loss of the original class.
+    perturbation = epsilon * image.grad.sign()
 
     adversarial_image = (
-        attack_input + perturbation
-    ).clamp(0, 1).detach()
+        image.detach() + perturbation
+    ).clamp(0, 1)
 
-    return adversarial_image
-
-
-# =========================================================
-# CONVERT TENSOR TO PIL IMAGE
-# =========================================================
-def tensor_to_image(image_tensor):
-    image_array = (
-        image_tensor.detach()
-        .squeeze(0)
-        .cpu()
-        .clamp(0, 1)
-        .permute(1, 2, 0)
-        .numpy()
-        * 255
-    )
-
-    return Image.fromarray(image_array.astype("uint8"))
+    return adversarial_image.detach()
 
 
-# =========================================================
-# SIDEBAR
-# =========================================================
-with st.sidebar:
-    st.title("🛡️ CyberShield AI")
-    st.subheader("Robustness Testing Lab")
+# --------------------------------------------------
+# SEMICIRCLE CONFIDENCE GAUGES
+# --------------------------------------------------
+def create_confidence_gauges(original_conf, adversarial_conf):
+    fig = go.Figure()
 
-    st.write(
-        "An adversarial machine learning demonstration "
-        "for evaluating image classifier sensitivity."
-    )
-
-    st.markdown("---")
-
-    epsilon = st.slider(
-        "FGSM Attack Strength (Epsilon)",
-        min_value=0.0,
-        max_value=0.08,
-        value=0.02,
-        step=0.005,
-        help="Higher epsilon allows a larger pixel perturbation.",
-    )
-
-    st.markdown("---")
-    st.subheader("System Information")
-
-    st.write("**Model:** ResNet-18")
-    st.write("**Dataset:** ImageNet pretrained weights")
-    st.write("**Attack:** FGSM")
-    st.write("**Task:** Image classification")
-
-    st.markdown("---")
-
-    st.write("**Experiment workflow**")
-    st.write("1. Upload an image")
-    st.write("2. Get original prediction")
-    st.write("3. Generate adversarial input")
-    st.write("4. Compare model outputs")
-
-    st.markdown("---")
-    st.caption("Educational cybersecurity project")
-
-
-# =========================================================
-# MAIN DASHBOARD
-# =========================================================
-st.title("🛡️ CYBERSHIELD AI")
-st.header("Adversarial Robustness Testing Dashboard")
-
-st.write(
-    "This application demonstrates how a small, calculated "
-    "input perturbation can affect the predictions of a "
-    "pretrained image classification model."
-)
-
-st.markdown("---")
-
-
-# =========================================================
-# LOAD MODEL SAFELY
-# =========================================================
-try:
-    model, categories = load_model()
-
-except Exception as error:
-    st.error(
-        "The model could not be loaded. Check the deployment "
-        "logs and confirm that model weights can be downloaded."
-    )
-
-    with st.expander("Technical error details"):
-        st.code(str(error))
-
-    st.stop()
-
-
-# =========================================================
-# IMAGE UPLOAD
-# =========================================================
-st.header("1. Upload Test Image")
-
-uploaded_file = st.file_uploader(
-    "Choose an image (JPG, JPEG or PNG)",
-    type=["jpg", "jpeg", "png"],
-)
-
-if uploaded_file is None:
-    st.info(
-        "Upload an image to start the experiment. "
-        "A clear animal or object image is recommended."
-    )
-
-    st.subheader("How the system works")
-
-    st.write(
-        "**Step 1:** The uploaded image is processed and "
-        "passed to the pretrained ResNet-18 model."
-    )
-
-    st.write(
-        "**Step 2:** The model produces an original class "
-        "prediction and confidence score."
-    )
-
-    st.write(
-        "**Step 3:** FGSM calculates an input gradient and "
-        "generates a perturbed image."
-    )
-
-    st.write(
-        "**Step 4:** The model evaluates the adversarial image, "
-        "and the application compares both predictions."
-    )
-
-    st.stop()
-
-
-# =========================================================
-# PROCESS IMAGE
-# =========================================================
-try:
-    image_bytes = uploaded_file.getvalue()
-
-    image_hash = hashlib.sha256(
-        image_bytes
-    ).hexdigest()
-
-    original_image = Image.open(
-        io.BytesIO(image_bytes)
-    ).convert("RGB")
-
-    display_image = original_image.resize((224, 224))
-
-    image_tensor = to_tensor(
-        display_image
-    ).unsqueeze(0)
-
-except Exception as error:
-    st.error("Unable to process this uploaded image.")
-    st.code(str(error))
-    st.stop()
-
-
-# =========================================================
-# ORIGINAL PREDICTION
-# =========================================================
-original_label, original_confidence = predict(
-    model,
-    image_tensor,
-    categories,
-)
-
-st.header("2. Original Model Prediction")
-
-original_col1, original_col2 = st.columns(
-    [1, 1],
-    gap="large",
-)
-
-with original_col1:
-    st.image(
-        display_image,
-        caption="Original input image",
-        use_container_width=True,
-    )
-
-with original_col2:
-    st.metric(
-        "Predicted Class",
-        original_label,
-    )
-
-    st.metric(
-        "Top-1 Confidence",
-        f"{original_confidence * 100:.2f}%",
-    )
-
-    st.write(
-        "The confidence value represents the model's "
-        "softmax probability for its top predicted class."
-    )
-
-
-# =========================================================
-# ATTACK CONFIGURATION
-# =========================================================
-st.markdown("---")
-st.header("3. Generate Adversarial Example")
-
-st.write(
-    f"Selected epsilon: **{epsilon:.3f}**. "
-    "Click the button to apply FGSM to the uploaded image."
-)
-
-run_attack = st.button(
-    "⚡ APPLY FGSM ATTACK",
-    type="primary",
-    use_container_width=True,
-)
-
-
-# =========================================================
-# RUN FGSM ATTACK
-# =========================================================
-if run_attack:
-    try:
-        with st.spinner(
-            "Generating adversarial input and evaluating model..."
-        ):
-            adversarial_tensor = apply_fgsm(
-                model,
-                image_tensor,
-                epsilon,
-            )
-
-            adversarial_label, adversarial_confidence = predict(
-                model,
-                adversarial_tensor,
-                categories,
-            )
-
-            st.session_state["cyber_result"] = {
-                "image_hash": image_hash,
-                "epsilon": epsilon,
-                "adversarial_tensor": adversarial_tensor.cpu(),
-                "adversarial_label": adversarial_label,
-                "adversarial_confidence": adversarial_confidence,
-            }
-
-    except Exception as error:
-        st.error("The FGSM attack could not be completed.")
-
-        with st.expander("Technical error details"):
-            st.code(str(error))
-
-
-# =========================================================
-# DISPLAY ATTACK RESULTS
-# =========================================================
-result = st.session_state.get("cyber_result")
-
-if (
-    result is not None
-    and result["image_hash"] == image_hash
-    and abs(result["epsilon"] - epsilon) < 1e-9
-):
-    adversarial_tensor = result["adversarial_tensor"]
-
-    adversarial_label = result["adversarial_label"]
-
-    adversarial_confidence = result[
-        "adversarial_confidence"
+    gauge_settings = [
+        {
+            "value": original_conf,
+            "title": "Original Image",
+            "color": "#22c55e",
+            "domain": {"x": [0.00, 0.48], "y": [0.02, 0.98]}
+        },
+        {
+            "value": adversarial_conf,
+            "title": "Adversarial Image",
+            "color": "#f59e0b",
+            "domain": {"x": [0.52, 1.00], "y": [0.02, 0.98]}
+        }
     ]
 
-    class_changed = (
-        original_label != adversarial_label
+    for item in gauge_settings:
+        fig.add_trace(
+            go.Indicator(
+                mode="gauge+number",
+                value=item["value"],
+                title={
+                    "text": item["title"],
+                    "font": {"size": 21, "color": "white"}
+                },
+                number={
+                    "suffix": "%",
+                    "font": {"size": 34, "color": "white"},
+                    "valueformat": ".2f"
+                },
+                gauge={
+                    "shape": "angular",
+                    "axis": {
+                        "range": [0, 100],
+                        "tickwidth": 1,
+                        "tickcolor": "#cccccc",
+                        "tickfont": {"color": "white", "size": 11}
+                    },
+                    "bar": {
+                        "color": item["color"],
+                        "thickness": 0.27
+                    },
+                    "bgcolor": "#171717",
+                    "borderwidth": 1,
+                    "bordercolor": "#444444",
+                    "steps": [
+                        {"range": [0, 50], "color": "#252525"},
+                        {"range": [50, 80], "color": "#303030"},
+                        {"range": [80, 100], "color": "#3a3a3a"}
+                    ]
+                },
+                domain=item["domain"]
+            )
+        )
+
+    fig.update_layout(
+        height=340,
+        margin=dict(l=20, r=20, t=65, b=15),
+        paper_bgcolor="#080808",
+        plot_bgcolor="#080808",
+        font={"color": "white"},
+        showlegend=False
     )
 
-    confidence_change = (
-        adversarial_confidence - original_confidence
-    ) * 100
+    return fig
+
+
+# --------------------------------------------------
+# MAIN DASHBOARD
+# --------------------------------------------------
+st.title("🛡️ CyberShield AI")
+st.subheader("Robustness Against Adversarial Attacks")
+
+st.markdown("""
+An interactive image-classification experiment using a pretrained
+ResNet-18 model and the Fast Gradient Sign Method (FGSM).
+""")
+
+st.info(
+    "Upload an image, observe its original prediction, "
+    "and test how an FGSM perturbation affects the model."
+)
+
+
+# --------------------------------------------------
+# SIDEBAR
+# --------------------------------------------------
+st.sidebar.title("⚙️ Experiment Settings")
+
+epsilon = st.sidebar.slider(
+    "FGSM Epsilon (Perturbation Strength)",
+    min_value=0.00,
+    max_value=0.10,
+    value=0.02,
+    step=0.01,
+    help="Higher epsilon allows a larger pixel perturbation."
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### About the Model")
+st.sidebar.write("Architecture: ResNet-18")
+st.sidebar.write("Weights: ImageNet pretrained")
+st.sidebar.write("Attack: Untargeted FGSM")
+st.sidebar.write(f"Device: {device.type.upper()}")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### FGSM Formula")
+st.latex(r"x_{adv}=clip(x+\epsilon \cdot sign(\nabla_x J),0,1)")
+
+
+# --------------------------------------------------
+# IMAGE UPLOAD
+# --------------------------------------------------
+uploaded_file = st.file_uploader(
+    "📤 Upload an image",
+    type=["jpg", "jpeg", "png", "webp"]
+)
+
+if uploaded_file is not None:
+    try:
+        pil_image = Image.open(uploaded_file).convert("RGB")
+    except Exception:
+        st.error("The uploaded file could not be read as an image.")
+        st.stop()
+
+    pixel_tensor = image_transform(pil_image).unsqueeze(0).to(device)
 
     st.markdown("---")
-    st.header("4. Adversarial Experiment Results")
+    st.header("1. Original Image")
 
-    metric1, metric2, metric3 = st.columns(3)
+    image_col, info_col = st.columns([1, 1])
 
-    with metric1:
-        st.metric(
-            "Original Class",
-            original_label,
-        )
-
-    with metric2:
-        st.metric(
-            "Adversarial Class",
-            adversarial_label,
-        )
-
-    with metric3:
-        st.metric(
-            "Confidence Change",
-            f"{confidence_change:+.2f} pp",
-        )
-
-    if class_changed:
-        st.warning(
-            "The predicted class changed after the perturbation. "
-            "This example demonstrates sensitivity to the tested attack."
-        )
-    else:
-        st.info(
-            "The predicted class remained unchanged for this example. "
-            "This does not establish that the model is fully robust."
-        )
-
-    result_col1, result_col2 = st.columns(
-        2,
-        gap="large",
-    )
-
-    with result_col1:
-        st.subheader("Original Image")
-
+    with image_col:
         st.image(
-            display_image,
-            use_container_width=True,
+            pil_image,
+            caption="Uploaded Image",
+            use_container_width=True
         )
 
-        st.write(f"**Class:** {original_label}")
+    original_index, original_conf, original_probs = predict_image(
+        pixel_tensor
+    )
+    original_label = class_names[original_index]
 
-        st.write(
-            f"**Confidence:** {original_confidence * 100:.2f}%"
+    with info_col:
+        st.markdown("### Original Prediction")
+        st.success(f"Predicted Label: **{original_label}**")
+        st.metric(
+            "Original Confidence",
+            f"{original_conf:.2f}%"
+        )
+        st.caption(
+            "Confidence is the model's predicted probability for "
+            "its top class, not a guarantee that the prediction is correct."
         )
 
-    with result_col2:
-        st.subheader("Adversarial Image")
-
-        adversarial_image = tensor_to_image(
-            adversarial_tensor
-        )
-
-        st.image(
-            adversarial_image,
-            use_container_width=True,
-        )
-
-        st.write(f"**Class:** {adversarial_label}")
-
-        st.write(
-            f"**Confidence:** {adversarial_confidence * 100:.2f}%"
-        )
-
-    # -----------------------------------------------------
-    # CONFIDENCE CHART
-    # -----------------------------------------------------
+    # --------------------------------------------------
+    # RUN FGSM
+    # --------------------------------------------------
     st.markdown("---")
-    st.header("5. Confidence Comparison")
+    st.header("2. Adversarial Attack")
 
-    chart_data = pd.DataFrame(
-        {
-            "Confidence (%)": [
-                original_confidence * 100,
-                adversarial_confidence * 100,
-            ]
-        },
-        index=[
-            "Original Image",
-            "Adversarial Image",
-        ],
-    )
+    st.write(f"Selected epsilon: **{epsilon:.2f}**")
 
-    st.bar_chart(
-        chart_data,
-        y_label="Confidence (%)",
-    )
+    if st.button("🚀 Apply FGSM Attack", use_container_width=True):
+        with st.spinner("Generating adversarial image and evaluating model..."):
+            adversarial_tensor = fgsm_attack(
+                pixel_tensor,
+                epsilon,
+                original_index
+            )
 
-    # -----------------------------------------------------
-    # AUTOMATIC EXPERIMENT ANALYSIS
-    # -----------------------------------------------------
-    st.markdown("---")
-    st.header("6. Automatic Experiment Analysis")
+            adversarial_index, adversarial_conf, adversarial_probs = (
+                predict_image(adversarial_tensor)
+            )
+            adversarial_label = class_names[adversarial_index]
 
-    st.write(
-        f"The pretrained ResNet-18 model classified the "
-        f"original image as **{original_label}**, with a "
-        f"top-1 confidence of "
-        f"**{original_confidence * 100:.2f}%**."
-    )
+            adversarial_array = (
+                adversarial_tensor[0]
+                .detach()
+                .cpu()
+                .permute(1, 2, 0)
+                .numpy()
+            )
+            adversarial_pil = Image.fromarray(
+                (adversarial_array * 255).round().clip(0, 255).astype("uint8")
+            )
 
-    st.write(
-        f"FGSM was then applied using epsilon "
-        f"**{epsilon:.3f}**. The adversarial image was "
-        f"classified as **{adversarial_label}**, with a "
-        f"top-1 confidence of "
-        f"**{adversarial_confidence * 100:.2f}%**."
-    )
+            confidence_change = adversarial_conf - original_conf
+            label_changed = original_index != adversarial_index
 
-    if class_changed:
-        st.write(
-            "**Interpretation:** The predicted class changed "
-            "for this input. This indicates sensitivity to the "
-            "tested perturbation, but does not measure overall "
-            "model robustness."
-        )
-    else:
-        st.write(
-            "**Interpretation:** The predicted class remained "
-            "the same for this input. Confidence may still have "
-            "changed. One image is insufficient to establish "
-            "overall robustness."
-        )
+            # --------------------------------------------------
+            # IMAGE COMPARISON
+            # --------------------------------------------------
+            st.markdown("---")
+            st.header("3. Original vs. Adversarial Image")
 
-    st.write(
-        "**Confidence change** is reported in percentage points, "
-        "calculated as adversarial confidence minus original confidence."
-    )
+            original_col, adversarial_col = st.columns(2)
 
-    # -----------------------------------------------------
-    # FGSM FORMULA
-    # -----------------------------------------------------
-    st.markdown("---")
-    st.header("7. FGSM Technical Explanation")
+            with original_col:
+                st.image(
+                    pixel_tensor[0].detach().cpu().permute(1, 2, 0).numpy(),
+                    caption="Original (preprocessed)",
+                    use_container_width=True
+                )
+                st.write(f"**Prediction:** {original_label}")
+                st.write(f"**Confidence:** {original_conf:.2f}%")
 
-    st.latex(
-        r"x_{\mathrm{adv}} = "
-        r"\operatorname{clip}_{[0,1]}"
-        r"\left(x + \epsilon \cdot "
-        r"\operatorname{sign}(\nabla_x J(\theta,x,y))\right)"
-    )
+            with adversarial_col:
+                st.image(
+                    adversarial_pil,
+                    caption="FGSM Adversarial Image",
+                    use_container_width=True
+                )
+                st.write(f"**Prediction:** {adversarial_label}")
+                st.write(f"**Confidence:** {adversarial_conf:.2f}%")
 
-    st.write(
-        "**x:** Original image input."
-    )
+            # --------------------------------------------------
+            # SEMICIRCLE GAUGES
+            # --------------------------------------------------
+            st.markdown("---")
+            st.header("4. Confidence Comparison")
 
-    st.write(
-        "**x_adv:** Generated adversarial image."
-    )
+            gauge_figure = create_confidence_gauges(
+                original_conf,
+                adversarial_conf
+            )
+            st.plotly_chart(
+                gauge_figure,
+                use_container_width=True
+            )
 
-    st.write(
-        "**Epsilon (ε):** Controls the maximum perturbation "
-        "added to each normalized input pixel."
-    )
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
 
-    st.write(
-        "**Gradient:** Indicates how the loss changes with "
-        "respect to the input."
-    )
+            with metric_col1:
+                st.metric(
+                    "Original Confidence",
+                    f"{original_conf:.2f}%"
+                )
 
-    st.write(
-        "**Sign function:** Uses the sign of each gradient value "
-        "to determine the perturbation direction."
-    )
+            with metric_col2:
+                st.metric(
+                    "Adversarial Confidence",
+                    f"{adversarial_conf:.2f}%",
+                    delta=f"{confidence_change:+.2f} percentage points"
+                )
 
-    st.write(
-        "**Clipping:** Keeps image pixel values within the "
-        "valid range from 0 to 1."
-    )
+            with metric_col3:
+                st.metric(
+                    "Prediction Changed",
+                    "YES" if label_changed else "NO"
+                )
 
-    st.caption(
-        "Implementation note: this demonstration uses the model's "
-        "original predicted class as a pseudo-label when calculating "
-        "the FGSM gradient."
-    )
+            # --------------------------------------------------
+            # AUTOMATIC ANALYSIS
+            # --------------------------------------------------
+            st.markdown("---")
+            st.header("5. Automatic Experiment Analysis")
 
-    # -----------------------------------------------------
-    # DOWNLOADABLE REPORT
-    # -----------------------------------------------------
-    st.markdown("---")
-    st.header("8. Download Experiment Report")
+            if label_changed:
+                st.warning(
+                    f"The predicted label changed from **{original_label}** "
+                    f"to **{adversarial_label}** after applying FGSM. "
+                    "This example demonstrates a change in the model's "
+                    "prediction under the selected perturbation."
+                )
+            else:
+                st.success(
+                    f"The predicted label remained **{original_label}**. "
+                    "For this image and epsilon, the attack did not change "
+                    "the top-1 predicted class."
+                )
 
-    report = f"""
+            if confidence_change > 0:
+                st.write(
+                    f"The adversarial image's top-class confidence is "
+                    f"{confidence_change:.2f} percentage points higher."
+                )
+            elif confidence_change < 0:
+                st.write(
+                    f"The adversarial image's top-class confidence is "
+                    f"{abs(confidence_change):.2f} percentage points lower."
+                )
+            else:
+                st.write("The top-class confidence did not change.")
+
+            st.caption(
+                "A single image is not sufficient to establish overall "
+                "model robustness. Test multiple images and epsilon values. "
+                "The model's confidence is not the same as accuracy."
+            )
+
+            # --------------------------------------------------
+            # TOP-5 PREDICTIONS
+            # --------------------------------------------------
+            st.markdown("---")
+            st.header("6. Top-5 Prediction Comparison")
+
+            original_top5 = torch.topk(original_probs, 5)
+            adversarial_top5 = torch.topk(adversarial_probs, 5)
+
+            top5_df = pd.DataFrame({
+                "Rank": range(1, 6),
+                "Original Label": [
+                    class_names[i] for i in original_top5.indices.tolist()
+                ],
+                "Original Confidence (%)": [
+                    round(float(v) * 100, 2)
+                    for v in original_top5.values.tolist()
+                ],
+                "Adversarial Label": [
+                    class_names[i] for i in adversarial_top5.indices.tolist()
+                ],
+                "Adversarial Confidence (%)": [
+                    round(float(v) * 100, 2)
+                    for v in adversarial_top5.values.tolist()
+                ]
+            })
+
+            st.dataframe(top5_df, use_container_width=True, hide_index=True)
+
+            # --------------------------------------------------
+            # DOWNLOAD REPORT
+            # --------------------------------------------------
+            st.markdown("---")
+            st.header("7. Download Experiment Report")
+
+            report = f"""
 CYBERSHIELD AI
-ADVERSARIAL ROBUSTNESS EXPERIMENT SUMMARY
+Robustness Against Adversarial Attacks
+--------------------------------------
 
-Model: ResNet-18 pretrained on ImageNet
-Attack: Fast Gradient Sign Method (FGSM)
-Epsilon: {epsilon:.3f}
+Experiment date and time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
-Original predicted class: {original_label}
-Original top-1 confidence: {original_confidence * 100:.2f}%
+MODEL DETAILS
+Architecture: ResNet-18
+Pretrained weights: ImageNet
+Attack: Untargeted Fast Gradient Sign Method (FGSM)
+Epsilon: {epsilon:.2f}
+Device: {device.type.upper()}
 
-Adversarial predicted class: {adversarial_label}
-Adversarial top-1 confidence: {adversarial_confidence * 100:.2f}%
+PREDICTION RESULTS
+Original predicted label: {original_label}
+Original top-class confidence: {original_conf:.2f}%
 
-Confidence change: {confidence_change:+.2f} percentage points
-Predicted class changed: {"Yes" if class_changed else "No"}
+Adversarial predicted label: {adversarial_label}
+Adversarial top-class confidence: {adversarial_conf:.2f}%
+
+Prediction changed: {"Yes" if label_changed else "No"}
+Confidence change (adversarial minus original):
+{confidence_change:+.2f} percentage points
 
 INTERPRETATION
-{"The predicted class changed for this image under the tested perturbation." if class_changed else "The predicted class did not change for this image under the tested perturbation."}
+{"The top-1 predicted label changed after the attack." if label_changed else "The top-1 predicted label remained the same after the attack."}
 
-LIMITATIONS
-This is a single-image educational demonstration using a pretrained
-classifier and a pseudo-label. It is not a comprehensive robustness
-benchmark. Results depend on the input image and epsilon value.
+This report describes one experiment. It does not establish overall
+model robustness or accuracy. Multiple images and perturbation levels
+are needed for a broader evaluation.
+
+FGSM FORMULA
+x_adv = clip(x + epsilon * sign(gradient), 0, 1)
+
+Here, x is the input image, epsilon controls perturbation strength,
+and the gradient is calculated from the loss for the original
+predicted class.
 """
 
-    st.download_button(
-        "⬇️ DOWNLOAD EXPERIMENT SUMMARY",
-        data=report,
-        file_name="cybershield_experiment_summary.txt",
-        mime="text/plain",
-        use_container_width=True,
-    )
+            st.download_button(
+                label="📥 Download Experiment Report (.txt)",
+                data=report,
+                file_name="CyberShield_AI_Experiment_Report.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+
+            csv_buffer = io.StringIO()
+            top5_df.to_csv(csv_buffer, index=False)
+
+            st.download_button(
+                label="📊 Download Top-5 Results (.csv)",
+                data=csv_buffer.getvalue(),
+                file_name="CyberShield_AI_Top5_Results.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
 
 else:
-    st.caption(
-        "Select an epsilon value and click APPLY FGSM ATTACK "
-        "to generate the experiment results."
-    )
+    st.info("👆 Upload an image above to begin the experiment.")
 
+    st.markdown("---")
+    st.header("How the Experiment Works")
 
-# =========================================================
-# FOOTER
-# =========================================================
-st.markdown("---")
-
-st.caption(
-    "CYBERSHIELD AI | Adversarial Robustness Demonstration | "
-    "ResNet-18 + FGSM"
-)
+    st.markdown("""
+    1. **Input:** Upload an image.
+    2. **Baseline:** ResNet-18 predicts the top class and confidence.
+    3. **Attack:** FGSM adds a small gradient-based perturbation.
+    4. **Evaluation:** The model predicts the perturbed image again.
+    5. **Comparison:** Review the labels, confidence gauges, and results.
+    6. **Report:** Download the experiment summary and top-5 predictions.
+    """)
